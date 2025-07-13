@@ -32,7 +32,6 @@ export const useAuthStore = create((set) => ({
             },
             body: JSON.stringify({ name, phone, email, password }),
           });
-          console.log("response is:", response )
     
           const data = await response.json();
     
