@@ -202,6 +202,33 @@ router.patch('/updateUser/:id', protectRoute, async (req, res) => {
   }
 });
 
+// router.delete('/deleteUser/:id', protectRoute, async (req, res) => {
+//   try {
+//     if (req.user.role !== 'admin') {
+//       return res.status(403).json({ message: 'Access denied. Admins only.' });
+//     }
+
+//     const { id } = req.params;
+
+//     const existingUser = await prisma.user.findUnique({ where: { id } });
+//     if (!existingUser) {
+//       return res.status(404).json({ message: 'User not found' });
+//     }
+
+//     // ✅ Remove user's vehicles first
+//     await prisma.vehicle.deleteMany({ where: { userId: id } });
+
+//     // ✅ Then remove user
+//     await prisma.user.delete({ where: { id } });
+
+//     res.json({ message: 'User deleted successfully' });
+//   } catch (err) {
+//     console.error('User delete error:', err);
+//     res.status(500).json({ message: 'Failed to delete user', error: err.message });
+//   }
+// });
+
+
 router.delete('/deleteUser/:id', protectRoute, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -210,23 +237,91 @@ router.delete('/deleteUser/:id', protectRoute, async (req, res) => {
 
     const { id } = req.params;
 
-    const existingUser = await prisma.user.findUnique({ where: { id } });
-    if (!existingUser) {
+    // 1️ Check if user exists
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // ✅ Remove user's vehicles first
-    await prisma.vehicle.deleteMany({ where: { userId: id } });
+    // 2️ If vehicle_owner, find trips using their vehicles
+    if (user.role === 'vehicle_owner') {
+      // 2a. Find their vehicles
+      const vehicles = await prisma.vehicle.findMany({
+        where: { userId: id }
+      });
+      const vehicleIds = vehicles.map(v => v.id);
 
-    // ✅ Then remove user
-    await prisma.user.delete({ where: { id } });
+      if (vehicleIds.length > 0) {
+        // 2b. Find trips that list these vehicles
+        const tripsUsingVehicles = await prisma.trip.findMany({
+          where: {
+            vehicleIds: { hasSome: vehicleIds }
+          }
+        });
 
-    res.json({ message: 'User deleted successfully' });
+        const tripIdsUsingOwnerVehicles = tripsUsingVehicles.map(t => t.id);
+
+        if (tripIdsUsingOwnerVehicles.length > 0) {
+          // 2c. Delete bookings for these trips
+          await prisma.booking.deleteMany({
+            where: { tripId: { in: tripIdsUsingOwnerVehicles } }
+          });
+
+          // 2d. Delete those trips
+          await prisma.trip.deleteMany({
+            where: { id: { in: tripIdsUsingOwnerVehicles } }
+          });
+        }
+
+        // 2e. Delete the vehicles themselves
+        await prisma.vehicle.deleteMany({
+          where: { id: { in: vehicleIds } }
+        });
+      }
+    }
+
+    // 3️ Delete this user's own bookings (as a traveler)
+    await prisma.booking.deleteMany({
+      where: { userId: id }
+    });
+
+    // 4️ Delete this user's own trips (they created)
+    //    First delete bookings on these trips!
+    const tripsCreatedByUser = await prisma.trip.findMany({
+      where: { userId: id }
+    });
+
+    const tripIdsCreatedByUser = tripsCreatedByUser.map(t => t.id);
+
+    if (tripIdsCreatedByUser.length > 0) {
+      await prisma.booking.deleteMany({
+        where: { tripId: { in: tripIdsCreatedByUser } }
+      });
+
+      await prisma.trip.deleteMany({
+        where: { id: { in: tripIdsCreatedByUser } }
+      });
+    }
+
+    // 5️ Delete any remaining vehicles owned by them
+    await prisma.vehicle.deleteMany({
+      where: { userId: id }
+    });
+
+    // 6️ Finally delete the user
+    await prisma.user.delete({
+      where: { id }
+    });
+
+    res.json({ message: 'User and all related data deleted successfully.' });
   } catch (err) {
     console.error('User delete error:', err);
-    res.status(500).json({ message: 'Failed to delete user', error: err.message });
+
+    res.status(500).json({
+      message: 'Failed to delete user.',
+      error: err.message
+    });
   }
 });
-
 
 export default router;
